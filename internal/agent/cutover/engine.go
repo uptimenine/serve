@@ -171,13 +171,12 @@ func (e *Engine) waitForHealth(ctx context.Context, desired planner.DesiredState
 				Port:          healthPort(container),
 				Path:          healthPath(container),
 			}
-			status := health.Unhealthy
 			checkCtx := ctx
 			cancel := func() {}
 			if timeout > 0 {
 				checkCtx, cancel = context.WithTimeout(ctx, timeout)
 			}
-			status, err = e.deps.Health.Check(checkCtx, target)
+			status, err := e.deps.Health.Check(checkCtx, target)
 			cancel()
 			if err != nil {
 				if ctx.Err() != nil {

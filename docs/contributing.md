@@ -65,7 +65,7 @@ go test -cover ./...
 
 Every merge or push to `main` publishes a GitHub Release containing a Linux AMD64 binary, its checksum, and a `VERSION` file. The same files are also retained as a GitHub Actions artifact for 90 days.
 
-Builds and release tags use calendar versions in `year.mm.number` format, such as `2026.07.1`. The final number is the Build workflow's run number.
+Builds and release tags use calendar versions in `year.mm.number` format, such as `2026.07.1`. The final number is the Release workflow's run number.
 
 ## Using this repository with another LLM
 

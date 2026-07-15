@@ -1,4 +1,4 @@
-name: Build
+name: Release
 
 on:
   push:
@@ -9,12 +9,12 @@ permissions:
   contents: write
 
 concurrency:
-  group: build-main
+  group: release-main
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build Linux artifact
+  release:
+    name: Release Linux artifact
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
