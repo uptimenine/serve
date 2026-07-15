@@ -1,0 +1,16 @@
+# Build output
+/bin/
+/dist/
+
+# Test and coverage output
+*.out
+coverage.*
+
+# Local Serve state and secrets
+/.serve/
+serve.secrets.yml
+
+# Editor and operating system files
+.DS_Store
+.idea/
+.vscode/
