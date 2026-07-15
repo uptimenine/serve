@@ -1,0 +1,30 @@
+[Unit]
+Description=Serve Agent
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+ExecStart=/usr/local/bin/serve agent run --state-dir /var/lib/serve/state --socket /run/serve/agent.sock
+Restart=always
+RestartSec=3
+RuntimeDirectory=serve
+StateDirectory=serve
+UMask=0077
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/serve /run/serve /run/docker.sock
+
+[Install]
+WantedBy=multi-user.target
