@@ -229,6 +229,9 @@ func (d *Daemon) apply(ctx context.Context, desired planner.DesiredState) error 
 	if err := agentstate.ValidateIdentity(desired.Service, desired.Destination); err != nil {
 		return err
 	}
+	if err := planner.ValidateDesired(desired); err != nil {
+		return err
+	}
 	if err := d.engine.Apply(ctx, desired); err != nil {
 		return err
 	}
@@ -356,6 +359,10 @@ func (d *Daemon) handlePutDesiredState(w http.ResponseWriter, r *http.Request) {
 	}
 	if desired.Service == "" || desired.Destination == "" {
 		http.Error(w, "desired state requires service and destination", http.StatusBadRequest)
+		return
+	}
+	if err := planner.ValidateDesired(desired); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 

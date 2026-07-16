@@ -36,7 +36,7 @@ serve remove [--service SERVICE] [--destination DEST] [--role ROLE] --force
 serve prune --force
 serve rollback --service SERVICE --destination DEST [--state-dir .serve/state]
 serve secrets edit [--file serve.secrets.yml]
-serve agent apply <desired.json> [--state-dir .serve/state]
+serve agent apply <desired.json> [--state-dir .serve/state] [--socket PATH]
 serve agent run [--state-dir DIR] [--socket PATH] [--reconcile-interval 10s]
 serve agent reconcile [--socket PATH]
 serve agent status [--json] [--socket PATH]
@@ -169,6 +169,12 @@ Apply a desired state JSON directly:
 
 ```sh
 serve agent apply ./desired.json --state-dir .serve/state
+```
+
+Submit desired state to a running agent:
+
+```sh
+serve agent apply ./desired.json --socket /run/serve/agent.sock
 ```
 
 ## Host prerequisites

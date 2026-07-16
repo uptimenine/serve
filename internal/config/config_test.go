@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,6 +172,49 @@ servers:
 	}
 	if !strings.Contains(err.Error(), "servers.web.restart.policy") {
 		t.Fatalf("expected error to identify invalid restart policy path, got %q", err.Error())
+	}
+}
+
+func TestLoadRejectsAgentRestartControlsWithDockerController(t *testing.T) {
+	for _, field := range []string{"initial_backoff", "max_backoff", "window"} {
+		t.Run(field, func(t *testing.T) {
+			path := writeConfig(t, "serve.yml", fmt.Sprintf(`
+service: app
+image: app
+servers:
+  web:
+    restart:
+      controller: docker
+      policy: always
+      %s: 1s
+`, field))
+
+			_, err := config.Load(path)
+
+			want := field + " is only supported by the agent restart controller"
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("Load error = %v, want %q", err, want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsDockerMaxAttemptsWithoutOnFailurePolicy(t *testing.T) {
+	path := writeConfig(t, "serve.yml", `
+service: app
+image: app
+servers:
+  web:
+    restart:
+      controller: docker
+      policy: always
+      max_attempts: 3
+`)
+
+	_, err := config.Load(path)
+
+	if err == nil || !strings.Contains(err.Error(), "max_attempts requires policy on-failure") {
+		t.Fatalf("Load error = %v, want unsupported Docker max attempts error", err)
 	}
 }
 

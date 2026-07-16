@@ -116,13 +116,13 @@ func (m *Manager) SetTargets(ctx context.Context, service string, role string, t
 // has no knowledge of the service yet, e.g. right after an agent restart).
 // Callers must hold m.mu.
 func (m *Manager) apply(ctx context.Context, service string, current routedService, next routedService, force bool) error {
-	if !force && sameRoutedService(current, next) {
-		return nil
-	}
-
+	previousProxyID := m.proxyID
 	proxyID, err := m.ensureProxy(ctx)
 	if err != nil {
 		return err
+	}
+	if !force && sameRoutedService(current, next) && previousProxyID != "" && previousProxyID == proxyID {
+		return nil
 	}
 
 	if len(next.addresses) == 0 {
@@ -221,6 +221,7 @@ func (m *Manager) ensureProxy(ctx context.Context) (runtime.ContainerID, error) 
 			{Name: "https", ContainerPort: 443, HostPort: 443, HostIP: "0.0.0.0"},
 		},
 		Network: m.opts.Network,
+		Restart: runtime.RestartPolicy{Policy: "unless-stopped"},
 		Volumes: []string{"serve-proxy-data:/home/kamal-proxy/.config/kamal-proxy"},
 	})
 	if err != nil {

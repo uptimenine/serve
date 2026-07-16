@@ -308,6 +308,80 @@ func TestAgentApplyLoadsDesiredStateSavesItAndReconciles(t *testing.T) {
 	}
 }
 
+func TestAgentApplySubmitsDesiredStateToRunningDaemon(t *testing.T) {
+	dir, err := os.MkdirTemp("", "serveapply")
+	if err != nil {
+		t.Fatalf("make temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	desiredPath := writeDesiredState(t, dir, desiredState("abc123"))
+	socket := filepath.Join(dir, "agent.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	received := make(chan planner.DesiredState, 1)
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/v1/desired-state" {
+			http.NotFound(w, r)
+			return
+		}
+		var desired planner.DesiredState
+		if err := json.NewDecoder(r.Body).Decode(&desired); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		received <- desired
+		_, _ = io.WriteString(w, `{"status":"applied"}`)
+	})}
+	go server.Serve(listener)
+	defer server.Close()
+
+	rt := fake.NewRuntime()
+	cmd := cli.New("v1.2.3-test", cli.WithRuntime(rt))
+	var stdout bytes.Buffer
+	exitCode := cmd.Run(context.Background(), []string{"agent", "apply", desiredPath, "--socket", socket}, &stdout, io.Discard)
+
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d", exitCode)
+	}
+	select {
+	case desired := <-received:
+		if desired.Version != "abc123" {
+			t.Fatalf("daemon received version %q, want abc123", desired.Version)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("daemon did not receive desired state")
+	}
+	if operations := rt.Operations(); len(operations) != 0 {
+		t.Fatalf("socket apply bypassed daemon and changed runtime directly: %v", operations)
+	}
+}
+
+func TestAgentApplyRejectsEmptyDesiredStateBeforeRuntimeChanges(t *testing.T) {
+	rt := fake.NewRuntime()
+	stateDir := t.TempDir()
+	desired := desiredState("abc123")
+	desired.Containers = nil
+	desiredPath := writeDesiredState(t, stateDir, desired)
+	cmd := cli.New("v1.2.3-test", cli.WithRuntime(rt))
+
+	var stderr bytes.Buffer
+	exitCode := cmd.Run(context.Background(), []string{"agent", "apply", desiredPath, "--state-dir", stateDir}, io.Discard, &stderr)
+
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "at least one container") {
+		t.Fatalf("expected empty desired state error, got %q", stderr.String())
+	}
+	if operations := rt.Operations(); len(operations) != 0 {
+		t.Fatalf("empty desired state changed runtime: %v", operations)
+	}
+}
+
 func TestAgentApplyRejectsUnsafeIdentityBeforeRuntimeChanges(t *testing.T) {
 	rt := fake.NewRuntime()
 	stateDir := t.TempDir()
@@ -384,7 +458,7 @@ servers:
 	cmd := cli.New("v1.2.3-test", cli.WithRuntime(rt))
 
 	var stdout bytes.Buffer
-	exitCode := cmd.Run(context.Background(), []string{"deploy", "--local", "--config", configPath, "--host", "localhost", "--version", "abc123", "--state-dir", dir}, &stdout, io.Discard)
+	exitCode := cmd.Run(context.Background(), []string{"deploy", "--local", "--config", configPath, "--version", "abc123", "--state-dir", dir}, &stdout, io.Discard)
 
 	if exitCode != 0 {
 		t.Fatalf("expected exit code 0, got %d", exitCode)
@@ -452,7 +526,7 @@ servers:
 
 	for _, host := range []string{"app1.example.com", "app2.example.com"} {
 		apply := ssh.callFor(t, host, "agent apply")
-		if apply.command != "sudo serve agent apply /dev/stdin --state-dir /var/lib/serve/state" {
+		if apply.command != "sudo serve agent apply /dev/stdin --socket /run/serve/agent.sock" {
 			t.Fatalf("apply command for %s = %q", host, apply.command)
 		}
 		var desired planner.DesiredState
@@ -942,6 +1016,59 @@ func (r *recordingSSHRunner) callFor(t *testing.T, host string, fragment string)
 	}
 	t.Fatalf("no ssh call on %s containing %q, calls: %#v", host, fragment, r.calls)
 	return sshCall{}
+}
+
+func TestRollbackReturnsToPreviousSuccessfulVersion(t *testing.T) {
+	rt := fake.NewRuntime()
+	stateDir := t.TempDir()
+	configPath := filepath.Join(stateDir, "serve.yml")
+	if err := os.WriteFile(configPath, []byte(`service: my-app
+image: ghcr.io/acme/my-app
+destination: production
+servers:
+  web:
+    hosts: [localhost]
+    command: ./server
+    app_port: 3000
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cmd := cli.New("v1.2.3-test", cli.WithRuntime(rt))
+	for _, version := range []string{"v1", "v2"} {
+		exitCode := cmd.Run(context.Background(), []string{
+			"deploy", "--local", "--config", configPath, "--host", "localhost",
+			"--version", version, "--state-dir", stateDir,
+		}, io.Discard, io.Discard)
+		if exitCode != 0 {
+			t.Fatalf("deploy %s exit code = %d", version, exitCode)
+		}
+	}
+
+	lastGood, err := agentstate.NewStore(stateDir).LoadLastGood("my-app", "production")
+	if err != nil {
+		t.Fatalf("load rollback state: %v", err)
+	}
+	if lastGood.Version != "v1" {
+		t.Fatalf("rollback version = %q, want previous successful version v1", lastGood.Version)
+	}
+
+	exitCode := cmd.Run(context.Background(), []string{
+		"rollback", "--service", "my-app", "--destination", "production", "--state-dir", stateDir,
+	}, io.Discard, io.Discard)
+	if exitCode != 0 {
+		t.Fatalf("rollback exit code = %d", exitCode)
+	}
+
+	containers := listManagedContainers(t, rt)
+	for _, container := range containers {
+		if container.Labels["serve.container_type"] != "app" {
+			continue
+		}
+		if container.Labels["serve.version"] == "v1" && container.Running {
+			return
+		}
+	}
+	t.Fatalf("previous version v1 is not running after rollback: %#v", containers)
 }
 
 func TestRollbackAppliesLastGoodState(t *testing.T) {

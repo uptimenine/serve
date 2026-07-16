@@ -85,10 +85,16 @@ Edit SOPS secrets:
 serve secrets edit --file serve.secrets.yml
 ```
 
-Apply a desired-state JSON locally:
+Apply a desired-state JSON directly with the local runtime:
 
 ```sh
 serve agent apply ./desired.json --state-dir .serve/state
+```
+
+Submit desired state to a running agent instead (required for remote deployments):
+
+```sh
+serve agent apply ./desired.json --socket /run/serve/agent.sock
 ```
 
 Run the current local deploy path:
@@ -192,7 +198,7 @@ serve remove [--service SERVICE] [--destination DEST] [--role ROLE] --force
 serve prune --force
 serve rollback --service SERVICE --destination DEST [--state-dir .serve/state]
 serve secrets edit [--file serve.secrets.yml]
-serve agent apply <desired.json> [--state-dir .serve/state]
+serve agent apply <desired.json> [--state-dir .serve/state] [--socket PATH]
 serve agent run [--state-dir DIR] [--socket PATH] [--reconcile-interval 10s]
 serve agent reconcile [--socket PATH]
 serve agent status [--json] [--socket PATH]

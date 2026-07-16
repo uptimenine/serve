@@ -27,11 +27,18 @@ type ContainerSpec struct {
 	Image    string
 	Command  []string
 	Labels   map[string]string
+	Env      map[string]string
 	EnvFiles []string
+	Restart  RestartPolicy
 	Ports    []Port
 	Network  string
 	Aliases  []string
 	Volumes  []string
+}
+
+type RestartPolicy struct {
+	Policy      string
+	MaxAttempts int
 }
 
 type Port struct {
@@ -48,6 +55,7 @@ type ContainerState struct {
 	Command   []string
 	Labels    map[string]string
 	EnvFiles  []string
+	Restart   RestartPolicy
 	Running   bool
 	ExitCode  int
 	OOMKilled bool

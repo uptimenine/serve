@@ -1,6 +1,8 @@
 package planner
 
 import (
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -165,6 +167,7 @@ func Plan(cfg config.Config, opts Options) (DesiredState, error) {
 				container.Ports = []Port{{Name: "http", ContainerPort: server.AppPort}}
 			}
 			applySecrets(&container, cfg, opts)
+			container.Labels["serve.spec_hash"] = specHash(container, state.Network, state.SecretsFile)
 			state.Containers = append(state.Containers, container)
 		}
 	}
@@ -189,10 +192,21 @@ func Plan(cfg config.Config, opts Options) (DesiredState, error) {
 		if accessory.InternalPort > 0 {
 			container.Ports = []Port{{Name: "tcp", ContainerPort: accessory.InternalPort}}
 		}
+		container.Labels["serve.spec_hash"] = specHash(container, state.Network, state.SecretsFile)
 		state.Containers = append(state.Containers, container)
 	}
 
+	if len(state.Containers) == 0 {
+		return DesiredState{}, fmt.Errorf("no workloads configured for host %q", opts.Host)
+	}
 	return state, nil
+}
+
+func ValidateDesired(desired DesiredState) error {
+	if len(desired.Containers) == 0 {
+		return fmt.Errorf("desired state must contain at least one container")
+	}
+	return nil
 }
 
 func ResolveVersion(state GitState, suffix func() string) (string, error) {
@@ -293,6 +307,20 @@ func applySecrets(container *Container, cfg config.Config, opts Options) {
 		}
 		container.SecretCiphertext[name] = ciphertext
 	}
+}
+
+func specHash(container Container, network string, secretsFile string) string {
+	container.Labels = nil
+	encoded, err := json.Marshal(struct {
+		Container   Container `json:"container"`
+		Network     string    `json:"network"`
+		SecretsFile string    `json:"secrets_file,omitempty"`
+	}{Container: container, Network: network, SecretsFile: secretsFile})
+	if err != nil {
+		panic(fmt.Sprintf("encode container spec hash: %v", err))
+	}
+	hash := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", hash[:])
 }
 
 func copyStringMap(source map[string]string) map[string]string {

@@ -154,6 +154,31 @@ func TestHealthyCandidateCutsOverAndStopsOldVersion(t *testing.T) {
 	}
 }
 
+func TestEquivalentDesiredStateDoesNotOverwritePreviousRollbackVersion(t *testing.T) {
+	env := newEnv(t)
+	current := desiredState("v2", 1, false)
+	if err := env.store.SaveDesired(current); err != nil {
+		t.Fatalf("save current desired state: %v", err)
+	}
+	if err := env.store.SaveLastGood(desiredState("v1", 1, false)); err != nil {
+		t.Fatalf("save previous rollback state: %v", err)
+	}
+	current.Proxy.Hosts = []string{}
+	env.checker.SetStatus(current.Containers[0].Name, health.Healthy)
+
+	if err := env.engine.Apply(context.Background(), current); err != nil {
+		t.Fatalf("Apply equivalent state: %v", err)
+	}
+
+	lastGood, err := env.store.LoadLastGood("my-app", "production")
+	if err != nil {
+		t.Fatalf("load rollback state: %v", err)
+	}
+	if lastGood.Version != "v1" {
+		t.Fatalf("equivalent reconcile replaced rollback version with %q", lastGood.Version)
+	}
+}
+
 func TestUnhealthyCandidateKeepsOldVersionServing(t *testing.T) {
 	env := newEnv(t)
 	env.deploy(t, desiredState("abc123", 1, false))
@@ -218,6 +243,32 @@ func (s *failingStarter) EnsureContainer(ctx context.Context, desired planner.De
 		return reconciler.EnsureResult{}, errors.New("start failed")
 	}
 	return s.delegate.EnsureContainer(ctx, desired, container)
+}
+
+func TestDependentStartupFailureKeepsOldVersionServing(t *testing.T) {
+	env := newEnv(t)
+	env.deploy(t, desiredState("abc123", 1, true))
+
+	starter := &failingStarter{delegate: reconciler.New(env.rt), failAt: 2}
+	engine := cutover.New(cutover.Deps{
+		Runtime: env.rt, Starter: starter, Health: env.checker,
+		Proxy: env.proxy, LastGood: env.store, Sleeper: noopSleeper{},
+	})
+	candidate := desiredState("def456", 1, true)
+	env.checker.SetStatus(candidate.Containers[0].Name, health.Healthy)
+
+	err := engine.Apply(context.Background(), candidate)
+
+	if err == nil || !strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("Apply error = %v, want dependent startup failure", err)
+	}
+	targets := env.proxy.Targets()
+	if len(targets) != 1 || targets[0].ContainerName != "my-app-web-production-abc123-r1" {
+		t.Fatalf("dependent failure changed serving version: %+v", targets)
+	}
+	if candidates := env.containersByVersion(t, "def456"); len(candidates) != 0 {
+		t.Fatalf("failed candidate containers were not cleaned up: %+v", candidates)
+	}
 }
 
 func TestDependentRolesBootOnlyAfterPrimaryRoleHealthy(t *testing.T) {

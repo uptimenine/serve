@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -43,14 +42,26 @@ func (w *EnvFileWriter) Write(service string, role string, values map[string]str
 		return "", fmt.Errorf("create env file directory: %w", err)
 	}
 
-	path := filepath.Join(w.dir, service+"-"+role+".env")
-	contents := formatEnv(values)
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+	file, err := os.CreateTemp(w.dir, "serve-env-*.env")
+	if err != nil {
+		return "", fmt.Errorf("create env file: %w", err)
+	}
+	path := file.Name()
+	defer func() {
+		if file != nil {
+			file.Close()
+		}
+	}()
+
+	if _, err := file.WriteString(formatEnv(values)); err != nil {
+		os.Remove(path)
 		return "", fmt.Errorf("write env file: %w", err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return "", fmt.Errorf("chmod env file: %w", err)
+	if err := file.Close(); err != nil {
+		os.Remove(path)
+		return "", fmt.Errorf("close env file: %w", err)
 	}
+	file = nil
 	return path, nil
 }
 
