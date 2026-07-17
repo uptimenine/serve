@@ -240,6 +240,18 @@ func TestDaemonAppliesDesiredStateOverSocket(t *testing.T) {
 	}
 }
 
+func TestDaemonRejectsEmptyDesiredStateBeforeRuntimeChanges(t *testing.T) {
+	e := startDaemon(t)
+	desired := desiredState("abc123")
+	desired.Containers = nil
+
+	putDesiredState(t, e, desired, http.StatusBadRequest)
+
+	if operations := e.rt.Operations(); len(operations) != 0 {
+		t.Fatalf("empty desired state changed runtime: %v", operations)
+	}
+}
+
 func TestFailedDesiredStateDoesNotReplaceActiveStateOrHealingTarget(t *testing.T) {
 	checker := fakehealth.NewChecker()
 	e := startDaemonWithHealth(t, checker)

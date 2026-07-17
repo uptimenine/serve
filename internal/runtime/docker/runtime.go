@@ -56,6 +56,7 @@ func (r *Runtime) CreateContainer(ctx context.Context, spec runtime.ContainerSpe
 	if err != nil {
 		return "", err
 	}
+	env = append(envMapEntries(spec.Env), env...)
 	config := &container.Config{
 		Image:        spec.Image,
 		Cmd:          spec.Command,
@@ -66,6 +67,10 @@ func (r *Runtime) CreateContainer(ctx context.Context, spec runtime.ContainerSpe
 	hostConfig := &container.HostConfig{
 		Binds:        append([]string(nil), spec.Volumes...),
 		PortBindings: portBindings(spec.Ports),
+		RestartPolicy: container.RestartPolicy{
+			Name:              container.RestartPolicyMode(spec.Restart.Policy),
+			MaximumRetryCount: spec.Restart.MaxAttempts,
+		},
 	}
 	networkingConfig := &network.NetworkingConfig{}
 	if spec.Network != "" {
@@ -241,6 +246,20 @@ func (r *Runtime) RemoveNetwork(ctx context.Context, name string) error {
 	return err
 }
 
+func envMapEntries(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	env := make([]string, 0, len(keys))
+	for _, key := range keys {
+		env = append(env, key+"="+values[key])
+	}
+	return env
+}
+
 func readEnvFiles(paths []string) ([]string, error) {
 	var env []string
 	for _, path := range paths {
@@ -319,6 +338,12 @@ func inspectState(inspect dockertypes.ContainerJSON) runtime.ContainerState {
 	if inspect.Config != nil {
 		state.Image = inspect.Config.Image
 		state.Command = append([]string(nil), inspect.Config.Cmd...)
+	}
+	if inspect.HostConfig != nil {
+		state.Restart = runtime.RestartPolicy{
+			Policy:      string(inspect.HostConfig.RestartPolicy.Name),
+			MaxAttempts: inspect.HostConfig.RestartPolicy.MaximumRetryCount,
+		}
 	}
 	if created, err := time.Parse(time.RFC3339Nano, inspect.Created); err == nil {
 		state.CreatedAt = created

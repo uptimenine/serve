@@ -743,12 +743,30 @@ func (c *Command) runAgent(ctx context.Context, args []string, stdout io.Writer)
 	if err != nil {
 		return fmt.Errorf("serve agent apply: %w", err)
 	}
-	rt, err := c.runtimeFactory()
-	if err != nil {
-		return fmt.Errorf("serve agent apply: create runtime: %w", err)
-	}
-	if err := applyDesired(ctx, rt, desired, options.stateDir); err != nil {
+	if err := agentstate.ValidateIdentity(desired.Service, desired.Destination); err != nil {
 		return fmt.Errorf("serve agent apply: %w", err)
+	}
+	if err := planner.ValidateDesired(desired); err != nil {
+		return fmt.Errorf("serve agent apply: %w", err)
+	}
+	if options.socketPath != "" {
+		payload, err := json.Marshal(desired)
+		if err != nil {
+			return fmt.Errorf("serve agent apply: encode desired state: %w", err)
+		}
+		response, err := agentSocketRequestWithBody(ctx, options.socketPath, http.MethodPut, "/v1/desired-state", bytes.NewReader(payload))
+		if err != nil {
+			return fmt.Errorf("serve agent apply: %w", err)
+		}
+		response.Body.Close()
+	} else {
+		rt, err := c.runtimeFactory()
+		if err != nil {
+			return fmt.Errorf("serve agent apply: create runtime: %w", err)
+		}
+		if err := applyDesired(ctx, rt, desired, options.stateDir); err != nil {
+			return fmt.Errorf("serve agent apply: %w", err)
+		}
 	}
 	fmt.Fprintf(stdout, "Applied desired state for %s %s %s\n", desired.Service, desired.Destination, desired.Version)
 	return nil
@@ -811,13 +829,17 @@ type agentRunOptions struct {
 // agentSocketRequest performs one HTTP request against the daemon's Unix
 // socket and returns the response after checking for a 200.
 func agentSocketRequest(ctx context.Context, socketPath string, method string, path string) (*http.Response, error) {
+	return agentSocketRequestWithBody(ctx, socketPath, method, path, nil)
+}
+
+func agentSocketRequestWithBody(ctx context.Context, socketPath string, method string, path string, body io.Reader) (*http.Response, error) {
 	client := &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _ string, _ string) (net.Conn, error) {
 			var dialer net.Dialer
 			return dialer.DialContext(ctx, "unix", socketPath)
 		},
 	}}
-	request, err := http.NewRequestWithContext(ctx, method, "http://serve-agent"+path, nil)
+	request, err := http.NewRequestWithContext(ctx, method, "http://serve-agent"+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -1043,7 +1065,7 @@ func (c *Command) remoteDeploy(ctx context.Context, cfg config.Config, options d
 			return fmt.Errorf("serve deploy: encode desired state for %s: %w", host, err)
 		}
 
-		apply := fmt.Sprintf("sudo serve agent apply /dev/stdin --state-dir %s", daemon.DefaultStateDir)
+		apply := fmt.Sprintf("sudo serve agent apply /dev/stdin --socket %s", daemon.DefaultSocketPath)
 		if err := c.sshRunner.Run(ctx, host, apply, bytes.NewReader(payload), nil); err != nil {
 			return fmt.Errorf("serve deploy: apply desired state on %s: %w", host, err)
 		}
@@ -1170,8 +1192,9 @@ func loadDesiredState(path string) (planner.DesiredState, error) {
 }
 
 type agentApplyOptions struct {
-	path     string
-	stateDir string
+	path       string
+	stateDir   string
+	socketPath string
 }
 
 func parseAgentApplyOptions(args []string) (agentApplyOptions, error) {
@@ -1183,6 +1206,12 @@ func parseAgentApplyOptions(args []string) (agentApplyOptions, error) {
 				return options, fmt.Errorf("serve agent apply: --state-dir requires a value")
 			}
 			options.stateDir = args[i+1]
+			i++
+		case "--socket":
+			if i+1 >= len(args) {
+				return options, fmt.Errorf("serve agent apply: --socket requires a value")
+			}
+			options.socketPath = args[i+1]
 			i++
 		default:
 			if strings.HasPrefix(args[i], "-") {
@@ -1209,11 +1238,7 @@ type deployOptions struct {
 }
 
 func parseDeployOptions(args []string) (deployOptions, error) {
-	host, err := os.Hostname()
-	if err != nil || strings.TrimSpace(host) == "" {
-		host = "localhost"
-	}
-	options := deployOptions{configPath: "serve.yml", host: host, version: "dev", stateDir: ".serve/state"}
+	options := deployOptions{configPath: "serve.yml", host: "localhost", version: "dev", stateDir: ".serve/state"}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--local":

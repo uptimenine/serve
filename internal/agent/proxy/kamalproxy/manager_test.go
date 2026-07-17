@@ -52,6 +52,23 @@ func TestAddTargetBootsProxyContainerWhenMissing(t *testing.T) {
 	}
 }
 
+func TestProxyContainerUsesDockerRestartPolicy(t *testing.T) {
+	rt := fakeruntime.NewRuntime()
+	manager := kamalproxy.New(rt, kamalproxy.Options{Network: "serve"})
+
+	if err := manager.AddTarget(context.Background(), webTarget()); err != nil {
+		t.Fatalf("AddTarget: %v", err)
+	}
+
+	spec, ok := rt.CreatedSpec("serve-proxy")
+	if !ok {
+		t.Fatal("expected proxy container spec")
+	}
+	if spec.Restart.Policy != "unless-stopped" {
+		t.Fatalf("proxy restart policy = %q, want unless-stopped", spec.Restart.Policy)
+	}
+}
+
 func TestAddTargetAdoptsExistingRunningProxy(t *testing.T) {
 	rt := fakeruntime.NewRuntime()
 	startProxyContainer(t, rt)
@@ -138,6 +155,33 @@ func TestUnchangedTargetSetSkipsProxyCalls(t *testing.T) {
 	}
 	if got := countExecs(rt, "kamal-proxy remove"); got != 1 {
 		t.Fatalf("expected 1 remove exec for unchanged target, got %d: %v", got, rt.Operations())
+	}
+}
+
+func TestUnchangedTargetSetRestartsDeadProxyAndRestoresRoute(t *testing.T) {
+	rt := fakeruntime.NewRuntime()
+	manager := kamalproxy.New(rt, kamalproxy.Options{Network: "serve"})
+	target := webTarget()
+	if err := manager.SetTargets(context.Background(), "my-app", "web", []proxy.Target{target}, proxy.RouteOptions{}); err != nil {
+		t.Fatalf("SetTargets initial: %v", err)
+	}
+	states, err := rt.ListContainers(context.Background(), runtime.ContainerFilters{Labels: map[string]string{"serve.container_type": "proxy"}})
+	if err != nil || len(states) != 1 {
+		t.Fatalf("find proxy container: %v %+v", err, states)
+	}
+	rt.Die(states[0].ID, 1, false)
+	rt.ClearOperations()
+
+	if err := manager.SetTargets(context.Background(), "my-app", "web", []proxy.Target{target}, proxy.RouteOptions{}); err != nil {
+		t.Fatalf("SetTargets after proxy death: %v", err)
+	}
+
+	states, err = rt.ListContainers(context.Background(), runtime.ContainerFilters{Labels: map[string]string{"serve.container_type": "proxy"}})
+	if err != nil || len(states) != 1 || !states[0].Running {
+		t.Fatalf("proxy was not restarted: %v %+v", err, states)
+	}
+	if got := countExecs(rt, "kamal-proxy deploy"); got != 1 {
+		t.Fatalf("route was not restored after proxy restart, operations: %v", rt.Operations())
 	}
 }
 

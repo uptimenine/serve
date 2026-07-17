@@ -3,6 +3,8 @@ package reconciler_test
 import (
 	"context"
 	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/uptimenine/serve/internal/agent/reconciler"
@@ -48,6 +50,51 @@ func TestReconcileCreatesNetworkBeforeStartingMissingContainers(t *testing.T) {
 	}
 	if operations[2] != "create_container:my-app-web-production-abc123-r1" {
 		t.Fatalf("expected container create after pull, got operations %#v", operations)
+	}
+}
+
+func TestReconcilePassesClearEnvironmentToRuntime(t *testing.T) {
+	rt := fake.NewRuntime()
+	desired := desiredState("abc123")
+	desired.Containers[0].Env = map[string]string{"RACK_ENV": "production", "FEATURE_FLAG": "enabled"}
+
+	if _, err := reconciler.New(rt).Reconcile(context.Background(), desired); err != nil {
+		t.Fatalf("reconcile desired state: %v", err)
+	}
+
+	spec, ok := rt.CreatedSpec(desired.Containers[0].Name)
+	if !ok {
+		t.Fatalf("expected runtime spec for %s", desired.Containers[0].Name)
+	}
+	envField := reflect.ValueOf(spec).FieldByName("Env")
+	if !envField.IsValid() {
+		t.Fatal("runtime container spec does not carry clear environment")
+	}
+	env, ok := envField.Interface().(map[string]string)
+	if !ok || !reflect.DeepEqual(env, desired.Containers[0].Env) {
+		t.Fatalf("runtime environment = %#v, want %#v", envField.Interface(), desired.Containers[0].Env)
+	}
+}
+
+func TestReconcilePassesDockerRestartPolicyToRuntime(t *testing.T) {
+	rt := fake.NewRuntime()
+	desired := desiredState("abc123")
+	desired.Containers[0].Restart = planner.Restart{Policy: "unless-stopped", Controller: "docker"}
+
+	if _, err := reconciler.New(rt).Reconcile(context.Background(), desired); err != nil {
+		t.Fatalf("reconcile desired state: %v", err)
+	}
+
+	spec, ok := rt.CreatedSpec(desired.Containers[0].Name)
+	if !ok {
+		t.Fatalf("expected runtime spec for %s", desired.Containers[0].Name)
+	}
+	restartField := reflect.ValueOf(spec).FieldByName("Restart")
+	if !restartField.IsValid() {
+		t.Fatal("runtime container spec does not carry Docker restart policy")
+	}
+	if policy := fmt.Sprint(restartField.FieldByName("Policy").Interface()); policy != "unless-stopped" {
+		t.Fatalf("runtime restart policy = %q, want unless-stopped", policy)
 	}
 }
 
@@ -144,6 +191,34 @@ func TestReconcileRemovesStaleContainerWhenRetentionAllows(t *testing.T) {
 	if len(operations) < 2 || operations[len(operations)-2] != "stop_container:"+string(staleID) || operations[len(operations)-1] != "remove_container:my-app-web-production-old123-r1" {
 		t.Fatalf("stale running container was not stopped before removal: %v", operations)
 	}
+}
+
+func TestEnsureContainerRemovesCandidateWhenStartFails(t *testing.T) {
+	rt := &startFailingRuntime{Runtime: fake.NewRuntime()}
+	desired := desiredState("abc123")
+
+	_, err := reconciler.New(rt).EnsureContainer(context.Background(), desired, desired.Containers[0])
+
+	if err == nil || !strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("EnsureContainer error = %v, want start failure", err)
+	}
+	containers, listErr := rt.ListContainers(context.Background(), runtime.ContainerFilters{Labels: map[string]string{"serve.managed": "true"}})
+	if listErr != nil {
+		t.Fatalf("list containers: %v", listErr)
+	}
+	if len(containers) != 0 {
+		t.Fatalf("failed candidate was left behind: %#v", containers)
+	}
+}
+
+type startFailingRuntime struct {
+	*fake.Runtime
+}
+
+func (r *startFailingRuntime) StartContainer(ctx context.Context, id runtime.ContainerID) error {
+	_ = ctx
+	_ = id
+	return fmt.Errorf("start failed")
 }
 
 func TestEnsureContainerStopsRunningMismatchBeforeReplacement(t *testing.T) {

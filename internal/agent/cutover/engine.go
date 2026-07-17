@@ -1,9 +1,12 @@
 package cutover
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"time"
 
@@ -30,6 +33,7 @@ type Starter interface {
 }
 
 type LastGoodStore interface {
+	LoadDesired(service string, destination string) (planner.DesiredState, error)
 	SaveLastGood(desired planner.DesiredState) error
 }
 
@@ -62,6 +66,11 @@ func New(deps Deps) *Engine {
 }
 
 func (e *Engine) Apply(ctx context.Context, desired planner.DesiredState) error {
+	hadCurrent, err := e.preserveRollbackState(desired)
+	if err != nil {
+		return err
+	}
+
 	if desired.Network != "" {
 		if err := e.deps.Runtime.CreateNetwork(ctx, runtime.NetworkSpec{Name: desired.Network}); err != nil {
 			return err
@@ -84,25 +93,63 @@ func (e *Engine) Apply(ctx context.Context, desired planner.DesiredState) error 
 		return errors.Join(err, cleanupErr)
 	}
 
-	if err := e.switchTraffic(ctx, desired, primary); err != nil {
-		return errors.Join(err, e.removeContainers(ctx, desired, created))
-	}
-
 	createdDependents, err := e.startCandidates(ctx, desired, dependents)
 	if err != nil {
-		return errors.Join(err, e.removeContainers(ctx, desired, createdDependents))
+		created = append(created, createdDependents...)
+		return errors.Join(err, e.removeContainers(ctx, desired, created))
+	}
+	created = append(created, createdDependents...)
+
+	if err := e.switchTraffic(ctx, desired, primary); err != nil {
+		return errors.Join(err, e.removeContainers(ctx, desired, created))
 	}
 
 	if err := e.retireOldVersions(ctx, desired, existing); err != nil {
 		return err
 	}
 
-	if e.deps.LastGood != nil {
+	if e.deps.LastGood != nil && !hadCurrent {
 		if err := e.deps.LastGood.SaveLastGood(desired); err != nil {
-			return fmt.Errorf("save last-good state: %w", err)
+			return fmt.Errorf("save initial rollback state: %w", err)
 		}
 	}
 	return nil
+}
+
+func (e *Engine) preserveRollbackState(desired planner.DesiredState) (bool, error) {
+	if e.deps.LastGood == nil {
+		return false, nil
+	}
+	current, err := e.deps.LastGood.LoadDesired(desired.Service, desired.Destination)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("load current desired state: %w", err)
+	}
+	same, err := sameDesiredState(current, desired)
+	if err != nil {
+		return false, err
+	}
+	if same {
+		return true, nil
+	}
+	if err := e.deps.LastGood.SaveLastGood(current); err != nil {
+		return false, fmt.Errorf("save previous rollback state: %w", err)
+	}
+	return true, nil
+}
+
+func sameDesiredState(a planner.DesiredState, b planner.DesiredState) (bool, error) {
+	aJSON, err := json.Marshal(a)
+	if err != nil {
+		return false, fmt.Errorf("encode current desired state: %w", err)
+	}
+	bJSON, err := json.Marshal(b)
+	if err != nil {
+		return false, fmt.Errorf("encode candidate desired state: %w", err)
+	}
+	return bytes.Equal(aJSON, bJSON), nil
 }
 
 func (e *Engine) listManaged(ctx context.Context, desired planner.DesiredState) ([]runtime.ContainerState, error) {

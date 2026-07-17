@@ -80,6 +80,7 @@ func (r *Runtime) CreateContainer(ctx context.Context, spec runtime.ContainerSpe
 		Command:  append([]string(nil), spec.Command...),
 		Labels:   copyStringMap(spec.Labels),
 		EnvFiles: append([]string(nil), spec.EnvFiles...),
+		Restart:  spec.Restart,
 		Health:   runtime.HealthUnknown,
 		// Spread creation times so ordering by CreatedAt is deterministic
 		// even when a test creates several containers back to back.

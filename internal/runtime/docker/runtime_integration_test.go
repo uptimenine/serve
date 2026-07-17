@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -59,6 +60,40 @@ func TestDockerRuntimePullRunAndInspectContainer(t *testing.T) {
 	}
 	if state.Labels["serve.integration_test"] != t.Name() {
 		t.Fatalf("expected labels round-tripped, got %#v", state.Labels)
+	}
+}
+
+func TestDockerRuntimeAppliesRestartPolicy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	rt := newDockerRuntime(t)
+	name := testContainerName(t, "restart-policy")
+
+	if err := rt.PullImage(ctx, testImage); err != nil {
+		t.Fatalf("pull image: %v", err)
+	}
+	id, err := rt.CreateContainer(ctx, runtime.ContainerSpec{
+		Name:    name,
+		Image:   testImage,
+		Command: []string{"sh", "-c", "sleep 60"},
+		Restart: runtime.RestartPolicy{Policy: "unless-stopped"},
+		Labels:  map[string]string{"serve.integration_test": t.Name()},
+	})
+	if err != nil {
+		t.Fatalf("create container: %v", err)
+	}
+	defer removeContainer(t, rt, id)
+
+	state, err := rt.InspectContainer(ctx, id)
+	if err != nil {
+		t.Fatalf("inspect container: %v", err)
+	}
+	restartField := reflect.ValueOf(state).FieldByName("Restart")
+	if !restartField.IsValid() {
+		t.Fatal("inspected container state does not report restart policy")
+	}
+	if policy := fmt.Sprint(restartField.FieldByName("Policy").Interface()); policy != "unless-stopped" {
+		t.Fatalf("Docker restart policy = %q, want unless-stopped", policy)
 	}
 }
 

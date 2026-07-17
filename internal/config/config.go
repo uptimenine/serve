@@ -380,6 +380,20 @@ func validateRestart(path string, restart RestartConfig) []string {
 	if restart.Window.Duration < 0 {
 		problems = append(problems, path+".window must be positive")
 	}
+	if restart.Controller == "docker" {
+		if restart.InitialBackoff.Duration > 0 {
+			problems = append(problems, path+".initial_backoff is only supported by the agent restart controller")
+		}
+		if restart.MaxBackoff.Duration > 0 {
+			problems = append(problems, path+".max_backoff is only supported by the agent restart controller")
+		}
+		if restart.Window.Duration > 0 {
+			problems = append(problems, path+".window is only supported by the agent restart controller")
+		}
+		if restart.MaxAttempts > 0 && restart.Policy != "on-failure" {
+			problems = append(problems, path+".max_attempts requires policy on-failure with the docker restart controller")
+		}
+	}
 	return problems
 }
 

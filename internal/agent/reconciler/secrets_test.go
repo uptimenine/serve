@@ -2,9 +2,10 @@ package reconciler_test
 
 import (
 	"context"
+	"errors"
 	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/uptimenine/serve/internal/agent/reconciler"
@@ -14,8 +15,8 @@ import (
 	"github.com/uptimenine/serve/internal/runtime/fake"
 )
 
-func TestReconcileWritesResolvedSecretsToEnvFileAndPassesEnvFileToRuntime(t *testing.T) {
-	rt := fake.NewRuntime()
+func TestReconcileUsesPrivateEnvFileOnlyWhileRuntimeCreatesContainer(t *testing.T) {
+	rt := newEnvCapturingRuntime()
 	envDir := t.TempDir()
 	store := secretfake.NewStore(map[string]string{
 		"DATABASE_URL":    "postgres://user:password@db/prod",
@@ -34,20 +35,20 @@ func TestReconcileWritesResolvedSecretsToEnvFileAndPassesEnvFileToRuntime(t *tes
 	if err != nil {
 		t.Fatalf("reconcile desired state: %v", err)
 	}
-	envFile := filepath.Join(envDir, "my-app-web.env")
-	info, err := os.Stat(envFile)
-	if err != nil {
-		t.Fatalf("expected env file to be written: %v", err)
+	spec, ok := rt.CreatedSpec(desired.Containers[0].Name)
+	if !ok || len(spec.EnvFiles) != 1 {
+		t.Fatalf("expected one env file to reach runtime, got %#v", spec.EnvFiles)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("expected env file mode 0600, got %v", info.Mode().Perm())
-	}
-	contents := readFile(t, envFile)
+	envFile := spec.EnvFiles[0]
+	contents := rt.capturedContents(envFile)
 	if !strings.Contains(contents, "DATABASE_URL=postgres://user:password@db/prod\n") {
 		t.Fatalf("expected resolved DATABASE_URL in env file, got %q", contents)
 	}
 	if !strings.Contains(contents, "SECRET_KEY_BASE=super-secret-key\n") {
 		t.Fatalf("expected resolved SECRET_KEY_BASE in env file, got %q", contents)
+	}
+	if _, err := os.Stat(envFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("plaintext env file still exists after container create: %v", err)
 	}
 
 	containers, err := rt.ListContainers(context.Background(), runtime.ContainerFilters{Labels: map[string]string{"serve.managed": "true"}})
@@ -56,9 +57,6 @@ func TestReconcileWritesResolvedSecretsToEnvFileAndPassesEnvFileToRuntime(t *tes
 	}
 	if len(containers) != 1 {
 		t.Fatalf("expected one container, got %#v", containers)
-	}
-	if len(containers[0].EnvFiles) != 1 || containers[0].EnvFiles[0] != envFile {
-		t.Fatalf("expected runtime container to reference env file %q, got %#v", envFile, containers[0].EnvFiles)
 	}
 	if strings.Contains(strings.Join(containers[0].Command, " "), "super-secret-key") {
 		t.Fatalf("secret leaked into container command: %#v", containers[0].Command)
@@ -99,7 +97,7 @@ func TestReconcileAbortsCreateWhenSecretResolutionFails(t *testing.T) {
 }
 
 func TestReconcileRematerializesSecretFileWhenRecreatingContainer(t *testing.T) {
-	rt := fake.NewRuntime()
+	rt := newEnvCapturingRuntime()
 	envDir := t.TempDir()
 	store := secretfake.NewStore(map[string]string{"DATABASE_URL": "postgres://user:password@db/prod"})
 	desired := desiredState("abc123")
@@ -111,10 +109,6 @@ func TestReconcileRematerializesSecretFileWhenRecreatingContainer(t *testing.T) 
 	if _, err := reconcile.Reconcile(context.Background(), desired); err != nil {
 		t.Fatalf("initial reconcile: %v", err)
 	}
-	envFile := filepath.Join(envDir, "my-app-web.env")
-	if err := os.Remove(envFile); err != nil {
-		t.Fatalf("remove env file to simulate reboot tmpfs loss: %v", err)
-	}
 	containers, err := rt.ListContainers(context.Background(), runtime.ContainerFilters{Labels: map[string]string{"serve.managed": "true"}})
 	if err != nil {
 		t.Fatalf("list containers: %v", err)
@@ -124,12 +118,19 @@ func TestReconcileRematerializesSecretFileWhenRecreatingContainer(t *testing.T) 
 	}
 
 	if _, err := reconcile.Reconcile(context.Background(), desired); err != nil {
-		t.Fatalf("reconcile after simulated reboot: %v", err)
+		t.Fatalf("reconcile after container removal: %v", err)
 	}
 
-	contents := readFile(t, envFile)
-	if !strings.Contains(contents, "DATABASE_URL=postgres://user:password@db/prod\n") {
-		t.Fatalf("expected secret env file to be re-materialized, got %q", contents)
+	if captured := rt.capturedFiles(); len(captured) != 2 {
+		t.Fatalf("expected a fresh secret file for each create, got %#v", captured)
+	}
+	for path, contents := range rt.capturedFiles() {
+		if !strings.Contains(contents, "DATABASE_URL=postgres://user:password@db/prod\n") {
+			t.Fatalf("env file %s did not contain resolved secret: %q", path, contents)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("plaintext env file %s still exists: %v", path, err)
+		}
 	}
 }
 
@@ -156,11 +157,41 @@ func TestReconcilePassesEmbeddedSecretsFileToStore(t *testing.T) {
 	}
 }
 
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
+type envCapturingRuntime struct {
+	*fake.Runtime
+	mu       sync.Mutex
+	captured map[string]string
+}
+
+func newEnvCapturingRuntime() *envCapturingRuntime {
+	return &envCapturingRuntime{Runtime: fake.NewRuntime(), captured: map[string]string{}}
+}
+
+func (r *envCapturingRuntime) CreateContainer(ctx context.Context, spec runtime.ContainerSpec) (runtime.ContainerID, error) {
+	for _, path := range spec.EnvFiles {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		r.mu.Lock()
+		r.captured[path] = string(contents)
+		r.mu.Unlock()
 	}
-	return string(contents)
+	return r.Runtime.CreateContainer(ctx, spec)
+}
+
+func (r *envCapturingRuntime) capturedContents(path string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.captured[path]
+}
+
+func (r *envCapturingRuntime) capturedFiles() map[string]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	files := make(map[string]string, len(r.captured))
+	for path, contents := range r.captured {
+		files[path] = contents
+	}
+	return files
 }

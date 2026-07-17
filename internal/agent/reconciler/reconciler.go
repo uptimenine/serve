@@ -2,7 +2,9 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/uptimenine/serve/internal/agent/health"
@@ -147,25 +149,44 @@ func (r *Reconciler) ensureContainer(ctx context.Context, desired planner.Desire
 		return result, err
 	}
 
-	id, err := r.runtime.CreateContainer(ctx, runtime.ContainerSpec{
+	id, createErr := r.runtime.CreateContainer(ctx, runtime.ContainerSpec{
 		Name:     container.Name,
 		Image:    container.Image,
 		Command:  append([]string(nil), container.Command...),
 		Labels:   copyStringMap(container.Labels),
+		Env:      copyStringMap(container.Env),
 		EnvFiles: envFiles,
+		Restart:  dockerRestartPolicy(container.Restart),
 		Ports:    convertPorts(container.Ports),
 		Network:  desired.Network,
 		Aliases:  append([]string(nil), container.Aliases...),
 		Volumes:  append([]string(nil), container.Volumes...),
 	})
-	if err != nil {
-		return result, err
+	cleanupErr := cleanupEnvFiles(envFiles)
+	if createErr != nil {
+		return result, errors.Join(createErr, cleanupErr)
+	}
+	if cleanupErr != nil {
+		return result, errors.Join(cleanupErr, r.runtime.RemoveContainer(ctx, id))
 	}
 	if err := r.runtime.StartContainer(ctx, id); err != nil {
-		return result, err
+		return result, errors.Join(err, r.runtime.RemoveContainer(ctx, id))
 	}
 	result.Created = true
 	return result, nil
+}
+
+func cleanupEnvFiles(paths []string) error {
+	var errs []error
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, fmt.Errorf("remove env file %q: %w", path, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (r *Reconciler) stopAndRemove(ctx context.Context, container runtime.ContainerState) error {
@@ -266,6 +287,17 @@ func labelsInclude(current map[string]string, desired map[string]string) bool {
 		}
 	}
 	return true
+}
+
+func dockerRestartPolicy(restart planner.Restart) runtime.RestartPolicy {
+	if restart.Controller != "docker" {
+		return runtime.RestartPolicy{}
+	}
+	policy := restart.Policy
+	if policy == "" {
+		policy = "always"
+	}
+	return runtime.RestartPolicy{Policy: policy, MaxAttempts: restart.MaxAttempts}
 }
 
 func convertPorts(ports []planner.Port) []runtime.Port {

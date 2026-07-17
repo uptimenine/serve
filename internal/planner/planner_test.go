@@ -59,6 +59,10 @@ func TestPlanCreatesOneWebContainerPerReplicaWithLabels(t *testing.T) {
 		t.Fatal("expected web container to be marked as a proxy target")
 	}
 
+	specHash := first.Labels["serve.spec_hash"]
+	if len(specHash) != 64 {
+		t.Fatalf("expected SHA-256 spec hash label, got %q", specHash)
+	}
 	expectedLabels := map[string]string{
 		"serve.managed":        "true",
 		"serve.service":        "my-app",
@@ -67,6 +71,7 @@ func TestPlanCreatesOneWebContainerPerReplicaWithLabels(t *testing.T) {
 		"serve.version":        "abc123",
 		"serve.replica":        "1",
 		"serve.container_type": "app",
+		"serve.spec_hash":      specHash,
 	}
 	if !reflect.DeepEqual(first.Labels, expectedLabels) {
 		t.Fatalf("expected labels %#v, got %#v", expectedLabels, first.Labels)
@@ -83,6 +88,19 @@ func TestPlanRejectsVersionThatCannotBeUsedInAContainerName(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "version") {
 		t.Fatalf("Plan error = %v, want invalid version error", err)
+	}
+}
+
+func TestPlanRejectsHostWithNoWorkloads(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Servers = map[string]config.ServerConfig{
+		"web": {Hosts: []string{"app1.example.com"}},
+	}
+
+	_, err := planner.Plan(cfg, planner.Options{Host: "other.example.com", Version: "abc123"})
+
+	if err == nil || !strings.Contains(err.Error(), "no workloads configured for host") {
+		t.Fatalf("Plan error = %v, want empty host plan error", err)
 	}
 }
 
@@ -143,6 +161,32 @@ func TestPlanIncludesOnlyRolesAndAccessoriesForHost(t *testing.T) {
 		if container.Role == "worker" || container.Role == "postgres" {
 			t.Fatalf("did not expect off-host container in desired state: %#v", container)
 		}
+	}
+}
+
+func TestPlanSpecHashChangesWhenContainerConfigurationChanges(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Servers = map[string]config.ServerConfig{
+		"web": {Hosts: []string{"app1.example.com"}, Command: "./server", Replicas: 1},
+	}
+
+	first, err := planner.Plan(cfg, planner.Options{Host: "app1.example.com", Version: "abc123"})
+	if err != nil {
+		t.Fatalf("plan first state: %v", err)
+	}
+	cfg.Env.Clear["RACK_ENV"] = "staging"
+	second, err := planner.Plan(cfg, planner.Options{Host: "app1.example.com", Version: "abc123"})
+	if err != nil {
+		t.Fatalf("plan changed state: %v", err)
+	}
+
+	firstHash := first.Containers[0].Labels["serve.spec_hash"]
+	secondHash := second.Containers[0].Labels["serve.spec_hash"]
+	if firstHash == "" || secondHash == "" {
+		t.Fatalf("planned containers are missing spec hashes: %q/%q", firstHash, secondHash)
+	}
+	if firstHash == secondHash {
+		t.Fatalf("environment change did not change spec hash %q", firstHash)
 	}
 }
 
@@ -257,6 +301,14 @@ func TestPlanMapsProxyRouteFromConfig(t *testing.T) {
 	}
 	if state.Proxy.DeployTimeout != "45s" || state.Proxy.DrainTimeout != "1m0s" {
 		t.Fatalf("proxy timeouts = %q/%q", state.Proxy.DeployTimeout, state.Proxy.DrainTimeout)
+	}
+}
+
+func TestValidateDesiredRejectsEmptyWorkloadSet(t *testing.T) {
+	err := planner.ValidateDesired(planner.DesiredState{Service: "my-app", Destination: "production", Version: "abc123"})
+
+	if err == nil || !strings.Contains(err.Error(), "at least one container") {
+		t.Fatalf("ValidateDesired error = %v, want empty workload error", err)
 	}
 }
 
