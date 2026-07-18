@@ -25,6 +25,7 @@ func TestServeAgentServiceHasRootProcessHardening(t *testing.T) {
 		"LockPersonality=true",
 		"ReadWritePaths=/var/lib/serve /run/serve /run/docker.sock",
 		"UMask=0077",
+		"Environment=HOME=/root",
 	} {
 		if !strings.Contains(unit, directive) {
 			t.Errorf("service unit is missing %s", directive)

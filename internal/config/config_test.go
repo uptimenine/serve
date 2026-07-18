@@ -47,6 +47,24 @@ image: ghcr.io/acme/my-app
 	}
 }
 
+func TestLoadRejectsRemovedRegistryConfiguration(t *testing.T) {
+	path := writeConfig(t, "serve.yml", `
+service: my-app
+image: ghcr.io/acme/my-app
+registry:
+  server: ghcr.io
+  username: deploy
+  password:
+    - GHCR_TOKEN
+`)
+
+	_, err := config.Load(path)
+
+	if err == nil || !strings.Contains(err.Error(), "field registry not found") {
+		t.Fatalf("Load error = %v, want removed registry field error", err)
+	}
+}
+
 func TestLoadRejectsMissingService(t *testing.T) {
 	path := writeConfig(t, "serve.yml", `
 image: ghcr.io/acme/my-app

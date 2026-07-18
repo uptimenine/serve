@@ -140,9 +140,10 @@ func (r *Reconciler) ensureContainer(ctx context.Context, desired planner.Desire
 		result.RemovedExisting = true
 	}
 
-	// Pull failures are tolerated: the create below succeeds when the image
-	// is already present locally and fails with a clear error otherwise.
-	_ = r.runtime.PullImage(ctx, container.Image)
+	// Pull failures are tolerated when the exact image is already present
+	// locally. If creation also fails, report both errors so registry failures
+	// are not hidden behind Docker's missing-image response.
+	pullErr := r.runtime.PullImage(ctx, container.Image)
 
 	envFiles, err := r.materializeSecrets(ctx, desired, container)
 	if err != nil {
@@ -164,7 +165,10 @@ func (r *Reconciler) ensureContainer(ctx context.Context, desired planner.Desire
 	})
 	cleanupErr := cleanupEnvFiles(envFiles)
 	if createErr != nil {
-		return result, errors.Join(createErr, cleanupErr)
+		if pullErr != nil {
+			pullErr = fmt.Errorf("pull image %s: %w", container.Image, pullErr)
+		}
+		return result, errors.Join(pullErr, createErr, cleanupErr)
 	}
 	if cleanupErr != nil {
 		return result, errors.Join(cleanupErr, r.runtime.RemoveContainer(ctx, id))

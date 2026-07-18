@@ -133,7 +133,7 @@ serve exec --host app1.example.com --container my-app-web-production-abc123-r1 -
 Notes:
 
 - `deploy --local` uses the local Docker daemon.
-- The planned image tag must already exist locally or be pullable by Docker.
+- The planned image tag must already exist locally or be pullable with credentials from `$DOCKER_CONFIG/config.json` or `$HOME/.docker/config.json`.
 - Remote deploy assumes the agent is already installed and running on each host (`serve setup` is not implemented yet).
 - Deploys are blue-green: candidates start next to the old version, traffic switches through kamal-proxy only after health passes, old versions are retained per `retain_containers` for rollback.
 - With `env.secret` configured, deploy embeds the encrypted `serve.secrets.yml` (SOPS ciphertext) in the desired state; the host agent decrypts it just-in-time with the host's credentials (`sops` binary required on hosts).

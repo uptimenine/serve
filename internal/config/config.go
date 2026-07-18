@@ -17,7 +17,6 @@ type Config struct {
 	Service          string                     `yaml:"service"`
 	Image            string                     `yaml:"image"`
 	Destination      string                     `yaml:"destination"`
-	Registry         RegistryConfig             `yaml:"registry"`
 	Builder          BuilderConfig              `yaml:"builder"`
 	Servers          map[string]ServerConfig    `yaml:"servers"`
 	Proxy            ProxyConfig                `yaml:"proxy"`
@@ -27,12 +26,6 @@ type Config struct {
 	Env              EnvConfig                  `yaml:"env"`
 	Secrets          SecretsConfig              `yaml:"secrets"`
 	Observability    ObservabilityConfig        `yaml:"observability"`
-}
-
-type RegistryConfig struct {
-	Server   string   `yaml:"server"`
-	Username string   `yaml:"username"`
-	Password []string `yaml:"password"`
 }
 
 type BuilderConfig struct {
