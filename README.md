@@ -152,7 +152,7 @@ Different applications can also use different domains on the same machine. Keep 
 
 ## Private images and secrets
 
-Authenticate Docker to private registries on every deployment host before deploying. Serve does not currently provision registry credentials. See [Private registry access](docs/private-registry-access.md).
+Authenticate Docker to private registries on every deployment host before deploying. Serve reads the host's standard Docker client configuration, including credential helpers, but does not provision credentials. See [Private registry access](docs/private-registry-access.md).
 
 Application secrets can be stored in `serve.secrets.yml` with SOPS and referenced through `env.secret`. Hosts that decrypt secrets must have SOPS and the appropriate decryption credentials installed.
 

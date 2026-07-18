@@ -11,6 +11,7 @@ RestartSec=3
 RuntimeDirectory=serve
 StateDirectory=serve
 UMask=0077
+Environment=HOME=/root
 
 NoNewPrivileges=true
 ProtectSystem=strict

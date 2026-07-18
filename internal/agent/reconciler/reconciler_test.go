@@ -113,6 +113,34 @@ func TestReconcileCreatesContainerWhenPullFailsButImageIsLocal(t *testing.T) {
 	}
 }
 
+func TestReconcileReportsPullFailureWhenMissingImageCannotBeCreated(t *testing.T) {
+	rt := &createFailingRuntime{
+		Runtime:   fake.NewRuntime(),
+		createErr: fmt.Errorf("image is not available locally"),
+	}
+	rt.SetPullError(fmt.Errorf("registry authentication failed"))
+
+	_, err := reconciler.New(rt).Reconcile(context.Background(), desiredState("abc123"))
+
+	if err == nil {
+		t.Fatal("expected reconcile error")
+	}
+	for _, want := range []string{"registry authentication failed", "image is not available locally"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Reconcile error = %q, want error containing %q", err, want)
+		}
+	}
+}
+
+type createFailingRuntime struct {
+	*fake.Runtime
+	createErr error
+}
+
+func (r *createFailingRuntime) CreateContainer(context.Context, runtime.ContainerSpec) (runtime.ContainerID, error) {
+	return "", r.createErr
+}
+
 func TestReconcileDoesNotRecreateMatchingRunningContainer(t *testing.T) {
 	rt := fake.NewRuntime()
 	desired := desiredState("abc123")

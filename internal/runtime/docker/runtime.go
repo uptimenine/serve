@@ -19,6 +19,7 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
+	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 
@@ -26,7 +27,8 @@ import (
 )
 
 type Runtime struct {
-	client *client.Client
+	client       *client.Client
+	registryAuth registryAuthProvider
 }
 
 func NewFromEnv() (*Runtime, error) {
@@ -38,17 +40,20 @@ func NewFromEnv() (*Runtime, error) {
 }
 
 func New(cli *client.Client) *Runtime {
-	return &Runtime{client: cli}
+	return &Runtime{client: cli, registryAuth: newDockerConfigAuthProvider()}
 }
 
 func (r *Runtime) PullImage(ctx context.Context, imageRef string) error {
-	reader, err := r.client.ImagePull(ctx, imageRef, image.PullOptions{})
+	registryAuth, err := r.registryAuth.RegistryAuth(ctx, imageRef)
+	if err != nil {
+		return err
+	}
+	reader, err := r.client.ImagePull(ctx, imageRef, image.PullOptions{RegistryAuth: registryAuth})
 	if err != nil {
 		return err
 	}
 	defer reader.Close()
-	_, err = io.Copy(io.Discard, reader)
-	return err
+	return jsonmessage.DisplayJSONMessagesStream(reader, io.Discard, 0, false, nil)
 }
 
 func (r *Runtime) CreateContainer(ctx context.Context, spec runtime.ContainerSpec) (runtime.ContainerID, error) {
